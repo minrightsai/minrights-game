@@ -1,0 +1,6 @@
+qid,category,stem,choice_a,choice_b,choice_c,choice_d,correct_key,difficulty
+q001,general,"What is 2 + 2?",3,4,5,6,B,easy
+q002,general,"Which planet is closest to the Sun?",Mercury,Venus,Earth,Mars,A,easy
+q003,general,"What color do you get when you mix red and blue?",Green,Purple,Orange,Yellow,B,easy
+q004,general,"How many sides does a triangle have?",2,3,4,5,B,easy
+q005,general,"Which animal is known as the King of the Jungle?",Tiger,Elephant,Lion,Bear,C,easy
