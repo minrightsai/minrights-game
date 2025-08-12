@@ -11,13 +11,25 @@ function App() {
   const [result, setResult] = useState(null)
   const [leaderboard, setLeaderboard] = useState([])
   const [stats, setStats] = useState(null)
-  const [displayName, setDisplayName] = useState('')
-  const [showNameDialog, setShowNameDialog] = useState(false)
+  
+  // Auth state
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [username, setUsername] = useState('')
+  const [pin, setPin] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
+  const [currentUser, setCurrentUser] = useState('')
 
   useEffect(() => {
-    fetchLeaderboard()
-    fetchStats()
+    checkAuth()
   }, [])
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchLeaderboard()
+      fetchStats()
+    }
+  }, [isAuthenticated])
 
   useEffect(() => {
     let timer
@@ -28,6 +40,67 @@ function App() {
     }
     return () => clearTimeout(timer)
   }, [gameState, timeLeft])
+
+  const checkAuth = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/check`, {
+        credentials: 'include'
+      })
+      const data = await response.json()
+      if (data.authenticated) {
+        setIsAuthenticated(true)
+        setCurrentUser(data.username)
+      }
+    } catch (error) {
+      console.error('Auth check failed:', error)
+    }
+  }
+
+  const handleAuth = async (e) => {
+    e.preventDefault()
+    setAuthError('')
+    setAuthLoading(true)
+
+    try {
+      const response = await fetch(`${API_BASE}/auth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ username, pin })
+      })
+
+      const data = await response.json()
+      
+      if (data.success) {
+        setIsAuthenticated(true)
+        setCurrentUser(data.username)
+        setUsername('')
+        setPin('')
+      } else {
+        setAuthError(data.message || 'Authentication failed')
+      }
+    } catch (error) {
+      setAuthError('Authentication failed. Please try again.')
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  const handleLogout = async () => {
+    try {
+      await fetch(`${API_BASE}/logout`, {
+        method: 'POST',
+        credentials: 'include'
+      })
+      setIsAuthenticated(false)
+      setCurrentUser('')
+      setGameState('idle')
+      setStats(null)
+      setLeaderboard([])
+    } catch (error) {
+      console.error('Logout failed:', error)
+    }
+  }
 
   const fetchLeaderboard = async () => {
     try {
@@ -41,7 +114,7 @@ function App() {
 
   const fetchStats = async () => {
     try {
-      const response = await fetch(`${API_BASE}/guest/stats`, {
+      const response = await fetch(`${API_BASE}/user/stats`, {
         credentials: 'include'
       })
       const data = await response.json()
@@ -102,35 +175,82 @@ function App() {
     }
   }
 
-  const updateName = async () => {
-    if (!displayName.trim()) return
-    
-    try {
-      const response = await fetch(`${API_BASE}/guest/name`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ display_name: displayName })
-      })
-      
-      if (response.ok) {
-        setShowNameDialog(false)
-        fetchStats()
-      }
-    } catch (error) {
-      console.error('Failed to update name:', error)
-    }
+  // Show auth modal if not authenticated
+  if (!isAuthenticated) {
+    return (
+      <div className="app">
+        <div className="auth-overlay">
+          <div className="auth-modal">
+            <h1>Weekly Trivia Game</h1>
+            <p>Enter your username and 4-digit PIN to play</p>
+            
+            <form onSubmit={handleAuth}>
+              <div className="form-group">
+                <input
+                  type="text"
+                  placeholder="Username (3-20 characters)"
+                  value={username}
+                  onChange={(e) => {
+                    setUsername(e.target.value.toLowerCase())
+                    setAuthError('')
+                  }}
+                  minLength={3}
+                  maxLength={20}
+                  pattern="[a-z0-9_-]+"
+                  required
+                  autoFocus
+                />
+              </div>
+              
+              <div className="form-group">
+                <input
+                  type="password"
+                  placeholder="4-digit PIN"
+                  value={pin}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '').slice(0, 4)
+                    setPin(val)
+                    setAuthError('')
+                  }}
+                  maxLength={4}
+                  pattern="[0-9]{4}"
+                  required
+                />
+              </div>
+              
+              {authError && (
+                <div className="auth-error">{authError}</div>
+              )}
+              
+              <button 
+                type="submit" 
+                className="auth-btn"
+                disabled={authLoading || username.length < 3 || pin.length !== 4}
+              >
+                {authLoading ? 'Loading...' : 'Enter Game'}
+              </button>
+            </form>
+            
+            <div className="auth-info">
+              <p>First time? Your account will be created automatically.</p>
+              <p>Returning? Enter your PIN to access your account.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="app">
       <header className="header">
-        <h1>🧠 Weekly Trivia</h1>
+        <h1>Weekly Trivia</h1>
         {stats && (
           <div className="stats">
-            <span>Welcome, {stats.display_name}!</span>
+            <span>Welcome, {currentUser}!</span>
             <span>Progress: {stats.answered}/{stats.total_available}</span>
-            <button onClick={() => setShowNameDialog(true)}>Change Name</button>
+            <span>Points: {stats.total_points}</span>
+            <button onClick={handleLogout} className="logout-btn">Logout</button>
           </div>
         )}
       </header>
@@ -194,34 +314,15 @@ function App() {
           <h3>🏆 Weekly Leaderboard</h3>
           <div className="leaderboard-list">
             {leaderboard.map((player, index) => (
-              <div key={player.gid} className="leaderboard-entry">
+              <div key={index} className={`leaderboard-entry ${player.username === currentUser ? 'current-user' : ''}`}>
                 <span className="rank">#{index + 1}</span>
-                <span className="name">{player.display_name}</span>
+                <span className="name">{player.username}</span>
                 <span className="score">{player.total_points}pts</span>
               </div>
             ))}
           </div>
         </aside>
       </main>
-
-      {showNameDialog && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Change Display Name</h3>
-            <input
-              type="text"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Enter your name"
-              maxLength={20}
-            />
-            <div className="modal-buttons">
-              <button onClick={updateName}>Update</button>
-              <button onClick={() => setShowNameDialog(false)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
