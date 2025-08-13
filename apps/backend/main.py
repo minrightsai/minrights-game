@@ -19,7 +19,7 @@ app = FastAPI(title="Trivia Game API")
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite default port
+    allow_origins=["http://localhost:5173", "http://localhost:5174"],  # Vite ports
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,8 +39,10 @@ TOKEN_EXPIRE_DAYS = 7
 # In-memory storage for round sessions (temporary, doesn't need persistence)
 round_sessions = {}
 
-# Load questions
-questions_df = pd.read_csv("../../data/questions.csv")
+# Load questions - use minrights questions only
+questions_df = pd.read_csv("../../data/minrights_questions.csv")
+print(f"Loaded {len(questions_df)} minrights questions")
+
 questions = questions_df.to_dict('records')
 
 # Pydantic models
@@ -67,7 +69,8 @@ class RoundStart(BaseModel):
 
 class RoundSubmit(BaseModel):
     qid: str
-    selected_index: int
+    selected_index: Optional[int] = None  # For multiple choice
+    text_answer: Optional[str] = None     # For fill-in-the-blank
     round_token: str
 
 # Helper functions
@@ -113,6 +116,57 @@ def shuffle_choices_with_seed(choices: List[str], seed: int) -> tuple[List[str],
     index_map = {new_idx: orig_idx for new_idx, (orig_idx, _) in enumerate(indexed_choices)}
     
     return shuffled_choices, index_map
+
+def parse_question_data(question: dict) -> dict:
+    """Parse question data based on question type"""
+    qtype = question.get("question_type", "multiple_choice")
+    
+    if qtype == "multiple_choice":
+        # Legacy support - check if old format
+        if "choice_a" in question:
+            choices = [question["choice_a"], question["choice_b"], question["choice_c"], question["choice_d"]]
+            correct_answer = question["correct_key"]
+            time_limit = 10
+        else:
+            choices = question["answers"].split("|")
+            correct_answer = question["correct_answers"]
+            time_limit = int(question.get("time_limit_sec", 10))
+            
+        return {
+            "type": "multiple_choice",
+            "choices": choices,
+            "correct_answer": correct_answer,
+            "time_limit": time_limit
+        }
+    
+    elif qtype == "fill_blank_single":
+        acceptable_answers = [ans.strip().lower() for ans in question["correct_answers"].split("|")]
+        return {
+            "type": "fill_blank_single", 
+            "acceptable_answers": acceptable_answers,
+            "time_limit": int(question.get("time_limit_sec", 15))
+        }
+    
+    elif qtype == "fill_blank_multiple":
+        acceptable_answers = [ans.strip().lower() for ans in question["correct_answers"].split("|")]
+        return {
+            "type": "fill_blank_multiple",
+            "acceptable_answers": acceptable_answers,
+            "time_limit": int(question.get("time_limit_sec", 30))
+        }
+    
+    elif qtype == "image_identify":
+        image_filename = question["answers"]
+        acceptable_answers = [ans.strip().lower() for ans in question["correct_answers"].split("|")]
+        return {
+            "type": "image_identify",
+            "image_filename": image_filename,
+            "acceptable_answers": acceptable_answers,
+            "time_limit": int(question.get("time_limit_sec", 20))
+        }
+    
+    else:
+        raise ValueError(f"Unknown question type: {qtype}")
 
 @app.post("/api/auth")
 async def authenticate(data: AuthRequest, response: Response):
@@ -183,119 +237,269 @@ async def check_auth(request: Request):
 @app.post("/api/trivia/round/start")
 async def start_round(username: str = Depends(get_current_user)):
     """Start a new trivia round"""
-    # Get questions already answered by this user
-    result = supabase.table('trivia_results').select('qid').eq('username', username).execute()
-    answered_qids = {r['qid'] for r in result.data} if result.data else set()
+    # Get questions the user has already answered
+    answered_result = supabase.table('trivia_results').select('qid').eq('username', username).execute()
+    answered_qids = {row['qid'] for row in answered_result.data} if answered_result.data else set()
     
-    # Find an unanswered question
+    # Filter out already answered questions
     available_questions = [q for q in questions if q['qid'] not in answered_qids]
     
     if not available_questions:
-        # User has answered all questions
-        available_questions = questions  # Allow replaying questions
+        raise HTTPException(status_code=403, detail="No more questions available")
     
     question = random.choice(available_questions)
+    print(f"Selected question {question['qid']} for user {username}")
     qid = question["qid"]
     
-    # Create choices array
-    choices = [question["choice_a"], question["choice_b"], question["choice_c"], question["choice_d"]]
+    # Parse question data based on type
+    question_data = parse_question_data(question)
     
-    # Generate shuffle seed and shuffle choices
-    shuffle_seed = random.randint(1000, 9999)
-    shuffled_choices, index_map = shuffle_choices_with_seed(choices, shuffle_seed)
+    response = {
+        "qid": qid,
+        "stem": question["stem"],
+        "question_type": question_data["type"],
+        "time_limit_sec": question_data["time_limit"]
+    }
     
-    # Create round token
+    # Create round token with extended expiry
     token_payload = {
         "qid": qid,
         "username": username,
-        "shuffle_seed": shuffle_seed,
         "iat": datetime.utcnow().timestamp(),
-        "exp": (datetime.utcnow() + timedelta(seconds=15)).timestamp()
+        "exp": (datetime.utcnow() + timedelta(seconds=question_data["time_limit"] + 5)).timestamp()
     }
     round_token = jwt.encode(token_payload, SECRET_KEY, algorithm=ALGORITHM)
+    response["round_token"] = round_token
     
-    # Store round session
-    round_sessions[f"{username}_{qid}"] = {
-        "started_at": datetime.now(),
-        "index_map": index_map,
-        "correct_key": question["correct_key"]
-    }
+    # Handle different question types
+    if question_data["type"] == "multiple_choice":
+        shuffle_seed = random.randint(1000, 9999)
+        shuffled_choices, index_map = shuffle_choices_with_seed(question_data["choices"], shuffle_seed)
+        response["choices"] = shuffled_choices
+        
+        # Store round session for multiple choice
+        round_sessions[f"{username}_{qid}"] = {
+            "started_at": datetime.now(),
+            "index_map": index_map,
+            "correct_answer": question_data["correct_answer"],
+            "question_type": "multiple_choice"
+        }
+        
+    elif question_data["type"] in ["fill_blank_single", "fill_blank_multiple"]:
+        # Store acceptable answers for validation
+        round_sessions[f"{username}_{qid}"] = {
+            "started_at": datetime.now(),
+            "acceptable_answers": question_data["acceptable_answers"],
+            "question_type": question_data["type"]
+        }
+        if question_data["type"] == "fill_blank_multiple":
+            response["max_answers"] = len(question_data["acceptable_answers"])
+            
+    elif question_data["type"] == "image_identify":
+        response["image_filename"] = question_data["image_filename"]
+        round_sessions[f"{username}_{qid}"] = {
+            "started_at": datetime.now(),
+            "acceptable_answers": question_data["acceptable_answers"],
+            "question_type": "image_identify"
+        }
     
-    return {
-        "qid": qid,
-        "stem": question["stem"],
-        "choices": shuffled_choices,
-        "round_token": round_token,
-        "time_limit_sec": 10
-    }
+    return response
 
 @app.post("/api/trivia/round/submit")
 async def submit_round(data: RoundSubmit, username: str = Depends(get_current_user)):
     """Submit an answer for a trivia round"""
-    # Verify JWT token
     try:
-        payload = jwt.decode(data.round_token, SECRET_KEY, algorithms=[ALGORITHM])
-        token_username = payload["username"]
-        token_qid = payload["qid"]
+        print(f"Submit request: username={username}, qid={data.qid}, selected_index={data.selected_index}, text_answer={data.text_answer}")
         
-        if token_username != username or token_qid != data.qid:
+        # Verify JWT token
+        try:
+            payload = jwt.decode(data.round_token, SECRET_KEY, algorithms=[ALGORITHM])
+            token_username = payload["username"]
+            token_qid = payload["qid"]
+            
+            if token_username != username or token_qid != data.qid:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            
+            # Check expiration
+            if datetime.utcnow().timestamp() > payload["exp"]:
+                raise HTTPException(status_code=401, detail="Token expired")
+                
+        except JWTError as e:
+            print(f"JWT error: {e}")
             raise HTTPException(status_code=401, detail="Invalid token")
         
-        # Check expiration
-        if datetime.utcnow().timestamp() > payload["exp"]:
-            raise HTTPException(status_code=401, detail="Token expired")
+        # Check if already answered
+        result = supabase.table('trivia_results').select('*').eq('username', username).eq('qid', data.qid).execute()
+        if result.data:
+            print(f"ERROR: Question {data.qid} already answered by {username} - this should not happen!")
+            # Clean up the session since this shouldn't have been allowed
+            session_key = f"{username}_{data.qid}"
+            if session_key in round_sessions:
+                del round_sessions[session_key]
+            raise HTTPException(status_code=409, detail="Question already answered")
+        
+        # Get round session
+        session_key = f"{username}_{data.qid}"
+        session = round_sessions.get(session_key)
+        if not session:
+            print(f"Round session not found for key: {session_key}")
+            print(f"Available sessions: {list(round_sessions.keys())}")
+            raise HTTPException(status_code=400, detail="Round session not found")
+        
+        # Calculate response time
+        response_ms = int((datetime.now() - session["started_at"]).total_seconds() * 1000)
+        
+        correct = False
+        correct_answer_display = ""
+        
+        # Handle different question types
+        if session["question_type"] == "multiple_choice":
+            if data.selected_index is None:
+                raise HTTPException(status_code=400, detail="Selected index required for multiple choice")
+                
+            # Validate selected index
+            if data.selected_index < 0 or data.selected_index >= 4:
+                print(f"Invalid selected index: {data.selected_index} (must be 0-3)")
+                raise HTTPException(status_code=400, detail="Invalid selected index")
             
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+            # Map selected index to original choice
+            if data.selected_index not in session["index_map"]:
+                print(f"Selected index {data.selected_index} not in index_map: {session['index_map']}")
+                raise HTTPException(status_code=400, detail="Invalid choice index")
+            
+            original_index = session["index_map"][data.selected_index]
+            choice_keys = ["A", "B", "C", "D"]
+            selected_key = choice_keys[original_index]
+            
+            # Check if correct
+            correct = selected_key == session["correct_answer"]
+            correct_answer_display = session["correct_answer"]
+            
+        elif session["question_type"] in ["fill_blank_single", "fill_blank_multiple", "image_identify"]:
+            if data.text_answer is None:
+                raise HTTPException(status_code=400, detail="Text answer required for this question type")
+            
+            user_answer = data.text_answer.strip().lower()
+            acceptable_answers = session["acceptable_answers"]
+            
+            if session["question_type"] == "fill_blank_multiple":
+                # For multiple answers, check if answer is one of the acceptable ones and hasn't been used
+                if "submitted_answers" not in session:
+                    session["submitted_answers"] = []
+                
+                # Check if this answer is acceptable and not already submitted
+                if user_answer in acceptable_answers and user_answer not in session["submitted_answers"]:
+                    correct = True
+                    session["submitted_answers"].append(user_answer)
+                    # Update the session for this round
+                    round_sessions[f"{username}_{data.qid}"] = session
+                else:
+                    correct = False
+                
+                correct_answer_display = " | ".join(acceptable_answers)
+            else:
+                # For single answer or image identify
+                correct = user_answer in acceptable_answers
+                correct_answer_display = " | ".join(acceptable_answers)
+        
+        # Calculate points (100 for correct + speed bonus)
+        points = 0
+        if correct:
+            points = 100
+            speed_bonus = max(0, 50 - (response_ms // 200))  # Up to 50 bonus points for speed
+            points += speed_bonus
+        
+        # For multiple answers, don't store result yet, just return feedback
+        if session["question_type"] == "fill_blank_multiple":
+            return {
+                "correct": correct,
+                "points": 0,  # No points until round is complete
+                "response_ms": response_ms,
+                "correct_answer": correct_answer_display,
+                "is_intermediate": True,
+                "submitted_count": len(session.get("submitted_answers", [])),
+                "total_answers": len(acceptable_answers)
+            }
+        
+        # Store result in Supabase for other question types
+        supabase.table('trivia_results').insert({
+            'username': username,
+            'qid': data.qid,
+            'correct': correct,
+            'response_ms': response_ms,
+            'points': points,
+            'created_at': datetime.utcnow().isoformat()
+        }).execute()
+        
+        # Clean up session
+        del round_sessions[session_key]
+        
+        return {
+            "correct": correct,
+            "points": points,
+            "response_ms": response_ms,
+            "correct_answer": correct_answer_display
+        }
     
-    # Check if already answered
-    result = supabase.table('trivia_results').select('*').eq('username', username).eq('qid', data.qid).execute()
-    if result.data:
-        raise HTTPException(status_code=400, detail="Question already answered")
-    
-    # Get round session
-    session_key = f"{username}_{data.qid}"
-    session = round_sessions.get(session_key)
-    if not session:
-        raise HTTPException(status_code=400, detail="Round session not found")
-    
-    # Calculate response time
-    response_ms = int((datetime.now() - session["started_at"]).total_seconds() * 1000)
-    
-    # Map selected index to original choice
-    original_index = session["index_map"][data.selected_index]
-    choice_keys = ["A", "B", "C", "D"]
-    selected_key = choice_keys[original_index]
-    
-    # Check if correct
-    correct = selected_key == session["correct_key"]
-    
-    # Calculate points (100 for correct + speed bonus)
-    points = 0
-    if correct:
-        points = 100
-        speed_bonus = max(0, 50 - (response_ms // 200))  # Up to 50 bonus points for speed
-        points += speed_bonus
-    
-    # Store result in Supabase
-    supabase.table('trivia_results').insert({
-        'username': username,
-        'qid': data.qid,
-        'correct': correct,
-        'response_ms': response_ms,
-        'points': points,
-        'created_at': datetime.utcnow().isoformat()
-    }).execute()
-    
-    # Clean up session
-    del round_sessions[session_key]
-    
-    return {
-        "correct": correct,
-        "points": points,
-        "response_ms": response_ms,
-        "correct_answer": session["correct_key"]
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Submit error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to submit answer")
+
+@app.post("/api/trivia/round/finalize")
+async def finalize_round(data: dict, username: str = Depends(get_current_user)):
+    """Finalize a round (used for multiple answer questions when time expires)"""
+    try:
+        qid = data.get('qid')
+        if not qid:
+            raise HTTPException(status_code=400, detail="qid required")
+            
+        session_key = f"{username}_{qid}"
+        session = round_sessions.get(session_key)
+        if not session:
+            raise HTTPException(status_code=400, detail="Round session not found")
+        
+        # Calculate total response time
+        total_response_ms = int((datetime.now() - session["started_at"]).total_seconds() * 1000)
+        
+        # Calculate points based on how many correct answers were found
+        submitted_answers = session.get("submitted_answers", [])
+        total_possible = len(session["acceptable_answers"])
+        correct_count = len(submitted_answers)
+        
+        # Calculate points: base points for each correct answer + bonus for completion
+        points = correct_count * 50  # 50 points per correct answer
+        if correct_count == total_possible:
+            points += 100  # Bonus for getting all answers
+        
+        # Store result in Supabase
+        supabase.table('trivia_results').insert({
+            'username': username,
+            'qid': qid,
+            'correct': correct_count > 0,
+            'response_ms': total_response_ms,
+            'points': points,
+            'created_at': datetime.utcnow().isoformat()
+        }).execute()
+        
+        # Clean up session
+        del round_sessions[session_key]
+        
+        return {
+            "correct": correct_count > 0,
+            "points": points,
+            "response_ms": total_response_ms,
+            "correct_answer": " | ".join(session["acceptable_answers"]),
+            "submitted_answers": submitted_answers,
+            "total_possible": total_possible
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Finalize error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to finalize round")
 
 @app.get("/api/leaderboard")
 async def get_leaderboard(window: str = "week", limit: int = 25):

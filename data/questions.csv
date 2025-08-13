@@ -1,6 +1,7 @@
-qid,category,stem,choice_a,choice_b,choice_c,choice_d,correct_key,difficulty
-q001,general,"What is 2 + 2?",3,4,5,6,B,easy
-q002,general,"Which planet is closest to the Sun?",Mercury,Venus,Earth,Mars,A,easy
-q003,general,"What color do you get when you mix red and blue?",Green,Purple,Orange,Yellow,B,easy
-q004,general,"How many sides does a triangle have?",2,3,4,5,B,easy
-q005,general,"Which animal is known as the King of the Jungle?",Tiger,Elephant,Lion,Bear,C,easy
+qid,category,question_type,stem,answers,correct_answers,time_limit_sec,difficulty
+q001,general,multiple_choice,"What is 2 + 2?","3|4|5|6",B,10,easy
+q002,general,multiple_choice,"Which planet is closest to the Sun?","Mercury|Venus|Earth|Mars",A,10,easy
+q003,general,multiple_choice,"What color do you get when you mix red and blue?","Green|Purple|Orange|Yellow",B,10,easy
+q004,general,fill_blank_single,"How many sides does a triangle have?","three|3","three|3",8,easy
+q005,general,fill_blank_multiple,"Name the top 3 largest US states by area (any order)","alaska|texas|california","alaska|texas|california",30,medium
+q006,general,image_identify,"What type of animal is shown in this image?","dog1.jpg","dog|canine|puppy",15,easy

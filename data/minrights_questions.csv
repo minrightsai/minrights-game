@@ -1,0 +1,9 @@
+qid,category,question_type,stem,answers,correct_answers,time_limit_sec,difficulty
+mr001,energy,multiple_choice,"Which operator drilled the most wells in Colorado during 2024?","Oxy USA|Chevron USA|Prairie Operating|Civitas",B,15,medium
+mr002,energy,fill_blank_single,"What was the average number of days between permit approval and first production for wells in Wattenberg basin during 2023? (Round to nearest whole number)","203|two hundred three","203|two hundred three",12,medium
+mr003,energy,fill_blank_multiple,"Name the top 3 oil-producing formations/reservoirs in 2023 (any order):","niobrara|bakken|bone spring","niobrara|bakken|bone spring",25,hard
+mr004,energy,multiple_choice,"Which county had the well with the highest first 30-day oil production rate in 2023?","Weld County|Lea County|Eddy County|Duchesne County",C,15,medium
+mr005,energy,multiple_choice,"Which operator saw the largest absolute increase in oil production between 2022 and 2023?","Continental Resources|Chevron USA|Oxy USA|Permian Resources Operating",B,15,medium
+mr006,energy,fill_blank_single,"What is the average lateral length (in feet) for horizontal Niobrara wells drilled in 2023? (Round to nearest 100 feet)","11800|eleven thousand eight hundred","11800|eleven thousand eight hundred",12,hard
+mr007,energy,multiple_choice,"How many states are represented in the minrights database?","4 states|5 states|6 states|7 states",B,10,easy
+mr008,energy,fill_blank_single,"What is the earliest year with permit data in the minrights database?","1900|nineteen hundred","1900|nineteen hundred",8,easy
